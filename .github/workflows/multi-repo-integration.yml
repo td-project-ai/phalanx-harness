@@ -1,0 +1,97 @@
+name: Multi-Repo Integration
+
+# Validates that phalanx core's --bundle-source flag (PR-B / PR-D contract)
+# can install bundles from a directory outside the core repo. This is the
+# foundational guarantee for the three-repo split: core + market install
+# together as one coherent system.
+#
+# For now the workflow uses phalanx core's own tests/fixtures/synth_bundle_src/
+# as the external source. PR-F4 will swap to the live phalanx-market repo
+# once it ships its first real bundle.
+
+on:
+  schedule:
+    # Nightly at 06:45 UTC (15 min after the (now-removed) cross-version slot)
+    - cron: '45 6 * * *'
+  workflow_dispatch:
+    inputs:
+      phalanx_ref:
+        description: 'phalanx core ref (branch, tag, or SHA)'
+        required: false
+        default: 'main'
+  pull_request:
+    paths:
+      - '.github/workflows/multi-repo-integration.yml'
+      - 'tests/test_multi_repo_integration.py'
+
+jobs:
+  install:
+    name: install (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [claude, copilot, codex]
+    steps:
+      - name: Checkout phalanx core
+        uses: actions/checkout@v4
+        with:
+          repository: td-project-ai/phalanx
+          ref: ${{ inputs.phalanx_ref || 'main' }}
+          path: phalanx
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pyyaml
+
+      - name: Stage external bundle source
+        # Copy phalanx's synth bundle fixture to a sibling dir so the test
+        # provably exercises --bundle-source pointing OUTSIDE the core repo.
+        run: |
+          cp -r phalanx/tests/fixtures/synth_bundle_src external-bundles
+          ls -la external-bundles
+          cat external-bundles/catalog.yaml
+
+      - name: Install with --bundle-source
+        run: |
+          mkdir -p target
+          python phalanx/tools/platform/phalanx_install.py \
+            --platform ${{ matrix.platform }} \
+            --bundles synth-cloud \
+            --bundle-source "$GITHUB_WORKSPACE/external-bundles" \
+            --target "$GITHUB_WORKSPACE/target" \
+            --yes
+
+      - name: Verify external bundle landed
+        run: |
+          echo "--- target contents ---"
+          find target -maxdepth 4 -type f | sort
+          echo "--- assertions ---"
+          # The synth-skill skill from external-bundles must be present.
+          test -d target/skills/synth-skill || {
+            echo "::error::synth-skill from external bundle source not installed"
+            find target -name "synth-skill*" -o -name "SKILL.md" | head -20
+            exit 1
+          }
+          # Core skill must also be present (proves core install path didn't break).
+          test -d target/skills/managing-memory || {
+            echo "::error::core skill managing-memory missing"
+            exit 1
+          }
+          echo "OK: external bundle + core skills both installed"
+
+      - name: Report on failure
+        if: failure()
+        run: |
+          echo "::error::Multi-repo install failed for platform=${{ matrix.platform }}"
+          echo "Reproduce locally:"
+          echo "  git clone https://github.com/td-project-ai/phalanx.git /tmp/phalanx"
+          echo "  cp -r /tmp/phalanx/tests/fixtures/synth_bundle_src /tmp/external-bundles"
+          echo "  mkdir /tmp/target"
+          echo "  python /tmp/phalanx/tools/platform/phalanx_install.py \\"
+          echo "    --platform ${{ matrix.platform }} --bundles synth-cloud \\"
+          echo "    --bundle-source /tmp/external-bundles --target /tmp/target --yes"
