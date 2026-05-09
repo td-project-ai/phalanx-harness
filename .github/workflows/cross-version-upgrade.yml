@@ -1,0 +1,137 @@
+name: Cross-Version Upgrade
+
+# Verifies that the latest phalanx core's upgrade.py can migrate installs
+# from prior release tags, and that the upgraded install passes the latest
+# phalanx test suite.
+#
+# Migrated from phalanx core's deleted phalanx-upgrade.yml as part of
+# ADR-001 (three-repo split). Upgrade fidelity is a multi-version concern
+# and belongs in the harness, not in core's CI.
+
+on:
+  schedule:
+    # Nightly at 06:30 UTC
+    - cron: '30 6 * * *'
+  workflow_dispatch:
+    inputs:
+      from_versions:
+        description: 'JSON list of from_version tags (e.g. ["v2.10.0","v2.1.0"])'
+        required: false
+        default: '["v1.8.1","v1.9.4","v1.11.0","v2.1.0","v2.10.0"]'
+  pull_request:
+    paths:
+      - '.github/workflows/cross-version-upgrade.yml'
+      - 'tests/test_cross_version_upgrade.py'
+
+jobs:
+  resolve-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      from_versions: ${{ steps.set.outputs.from_versions }}
+    steps:
+      - id: set
+        run: |
+          if [ -n "${{ inputs.from_versions }}" ]; then
+            echo "from_versions=${{ inputs.from_versions }}" >> $GITHUB_OUTPUT
+          else
+            echo 'from_versions=["v1.8.1","v1.9.4","v1.11.0","v2.1.0","v2.10.0"]' >> $GITHUB_OUTPUT
+          fi
+
+  upgrade:
+    needs: resolve-matrix
+    name: upgrade (${{ matrix.from_version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        from_version: ${{ fromJson(needs.resolve-matrix.outputs.from_versions) }}
+    steps:
+      - name: Checkout phalanx HEAD
+        uses: actions/checkout@v4
+        with:
+          repository: td-project-ai/phalanx
+          ref: main
+          path: head
+          fetch-depth: 0
+
+      - name: Tag HEAD for registry clone
+        working-directory: head
+        run: git checkout -B phalanx-ci-head
+
+      - name: Checkout phalanx at ${{ matrix.from_version }}
+        uses: actions/checkout@v4
+        with:
+          repository: td-project-ai/phalanx
+          ref: ${{ matrix.from_version }}
+          path: install
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pyyaml pytest
+
+      - name: Point install registry at HEAD
+        working-directory: install
+        run: |
+          python - <<'PY'
+          import pathlib
+          try:
+              import yaml
+          except ImportError:
+              raise SystemExit("pyyaml missing")
+          p = pathlib.Path("config.yaml")
+          cfg = yaml.safe_load(p.read_text(encoding="utf-8")) if p.exists() else {}
+          cfg = cfg or {}
+          cfg.setdefault("registry", {})
+          cfg["registry"]["url"] = "file://${{ github.workspace }}/head/.git"
+          cfg["registry"]["branch"] = "phalanx-ci-head"
+          p.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+          print("registry ->", cfg["registry"])
+          PY
+
+      - name: Detect current version
+        working-directory: install
+        run: python ../head/tools/platform/upgrade.py --detect --root .
+
+      - name: Plan upgrade
+        working-directory: install
+        run: python ../head/tools/platform/upgrade.py --plan --root .
+
+      - name: Apply upgrade
+        working-directory: install
+        run: python ../head/tools/platform/upgrade.py --apply --no-backup --root .
+
+      - name: Verify post-upgrade version
+        working-directory: install
+        run: |
+          python ../head/tools/platform/upgrade.py --detect --root .
+          head_version=$(cat ../head/VERSION)
+          install_version=$(cat VERSION)
+          echo "HEAD=$head_version install=$install_version"
+          test "$head_version" = "$install_version" || {
+            echo "::error::VERSION mismatch after upgrade: head=$head_version install=$install_version"
+            exit 1
+          }
+
+      - name: Overlay HEAD test suite into upgraded install
+        run: |
+          rm -rf install/tests
+          cp -r head/tests install/tests
+
+      - name: Run tests against upgraded install
+        working-directory: install
+        run: python -m pytest tests/ -v --tb=short
+
+      - name: Report on failure
+        if: failure()
+        run: |
+          echo "::error::Upgrade from ${{ matrix.from_version }} to HEAD failed."
+          echo "Reproduce locally:"
+          echo "  git clone https://github.com/td-project-ai/phalanx.git /tmp/phalanx-head"
+          echo "  git clone --branch ${{ matrix.from_version }} https://github.com/td-project-ai/phalanx.git /tmp/phalanx-install"
+          echo "  cd /tmp/phalanx-install"
+          echo "  python /tmp/phalanx-head/tools/platform/upgrade.py --apply --root ."
+          echo "  cp -r /tmp/phalanx-head/tests tests && python -m pytest tests/ -v"

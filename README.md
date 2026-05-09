@@ -29,8 +29,8 @@ framework across boundaries that no single repo can validate on its own:
 
 Bootstrapped. Test workflows land in follow-up PRs:
 
-- **PR-F1** (this PR) - bootstrap: README, layout, smoke test
-- **PR-F2** - cross-version upgrade matrix (migrated from core's removed `phalanx-upgrade.yml`)
+- **PR-F1** - bootstrap: README, layout, smoke test
+- **PR-F2** (this PR) - cross-version upgrade matrix (migrated from core's removed `phalanx-upgrade.yml`)
 - **PR-F3** - multi-repo integration tests (core + market combined install)
 - **PR-F4** - bundle packaging tests (migrated from core)
 
