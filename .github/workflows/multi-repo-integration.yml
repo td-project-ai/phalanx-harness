@@ -40,6 +40,7 @@ jobs:
           ref: ${{ inputs.phalanx_ref || 'main' }}
           path: phalanx
           fetch-depth: 1
+          token: ${{ secrets.PHALANX_PAT }}
 
       - uses: actions/setup-python@v5
         with:
@@ -64,7 +65,7 @@ jobs:
             --bundles synth-cloud \
             --bundle-source "$GITHUB_WORKSPACE/external-bundles" \
             --target "$GITHUB_WORKSPACE/target" \
-            --yes
+            --skip-healthcheck
 
       - name: Verify external bundle landed
         run: |
