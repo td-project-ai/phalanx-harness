@@ -72,18 +72,24 @@ jobs:
           echo "--- target contents ---"
           find target -maxdepth 4 -type f | sort
           echo "--- assertions ---"
-          # The synth-skill skill from external-bundles must be present.
-          test -d target/skills/synth-skill || {
-            echo "::error::synth-skill from external bundle source not installed"
-            find target -name "synth-skill*" -o -name "SKILL.md" | head -20
+          # The synth-cloud bundle catalog from external-bundles must be registered.
+          test -f target/bundles/synth-cloud.yaml || {
+            echo "::error::synth-cloud bundle from external source not registered"
+            ls -la target/bundles/ || true
             exit 1
           }
-          # Core skill must also be present (proves core install path didn't break).
+          # installed_bundles.json must record synth-cloud (proves bundle install ran).
+          grep -q "synth-cloud" target/data/installed_bundles.json || {
+            echo "::error::synth-cloud not recorded in installed_bundles.json"
+            cat target/data/installed_bundles.json || true
+            exit 1
+          }
+          # Core skill referenced by the bundle must also be present.
           test -d target/skills/managing-memory || {
             echo "::error::core skill managing-memory missing"
             exit 1
           }
-          echo "OK: external bundle + core skills both installed"
+          echo "OK: external bundle catalog + core skills both installed"
 
       - name: Report on failure
         if: failure()
@@ -95,4 +101,4 @@ jobs:
           echo "  mkdir /tmp/target"
           echo "  python /tmp/phalanx/tools/platform/phalanx_install.py \\"
           echo "    --platform ${{ matrix.platform }} --bundles synth-cloud \\"
-          echo "    --bundle-source /tmp/external-bundles --target /tmp/target --yes"
+          echo "    --bundle-source /tmp/external-bundles --target /tmp/target"

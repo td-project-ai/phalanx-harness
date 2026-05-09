@@ -79,12 +79,12 @@ def test_workflow_targets_phalanx_repo(workflow_text):
 
 
 def test_workflow_asserts_external_and_core_present(workflow_text):
-    """Verification step must check BOTH the external bundle skill AND a
+    """Verification step must check BOTH the external bundle catalog AND a
     core skill landed - otherwise we don't know if --bundle-source is
     overlaying or replacing.
     """
-    assert "skills/synth-skill" in workflow_text, (
-        "verification must assert external bundle's synth-skill is installed"
+    assert "bundles/synth-cloud.yaml" in workflow_text, (
+        "verification must assert external bundle catalog (synth-cloud) is registered"
     )
     assert "skills/managing-memory" in workflow_text, (
         "verification must assert at least one core skill is also installed"
