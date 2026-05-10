@@ -5,9 +5,14 @@ name: Multi-Repo Integration
 # foundational guarantee for the three-repo split: core + market install
 # together as one coherent system.
 #
-# For now the workflow uses phalanx core's own tests/fixtures/synth_bundle_src/
-# as the external source. PR-F4 will swap to the live phalanx-market repo
-# once it ships its first real bundle.
+# Two jobs run in parallel:
+#
+#   install         - exercises --bundle-source against phalanx core's
+#                     tests/fixtures/synth_bundle_src/ (synthetic, hermetic).
+#   market-install  - exercises --market-source against the live
+#                     td-project-ai/phalanx-market repo (PR-F4 of ADR-001).
+#                     Installs the `writing` bundle and verifies its skill,
+#                     agent, tools, and context files all overlay cleanly.
 
 on:
   schedule:
@@ -102,3 +107,141 @@ jobs:
           echo "  python /tmp/phalanx/tools/platform/phalanx_install.py \\"
           echo "    --platform ${{ matrix.platform }} --bundles synth-cloud \\"
           echo "    --bundle-source /tmp/external-bundles --target /tmp/target"
+
+  market-install:
+    name: market-install (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [claude, copilot, codex]
+    steps:
+      - name: Checkout phalanx core
+        uses: actions/checkout@v4
+        with:
+          repository: td-project-ai/phalanx
+          ref: ${{ inputs.phalanx_ref || 'main' }}
+          path: phalanx
+          fetch-depth: 1
+          token: ${{ secrets.PHALANX_PAT }}
+
+      - name: Checkout phalanx-market
+        uses: actions/checkout@v4
+        with:
+          repository: td-project-ai/phalanx-market
+          ref: main
+          path: phalanx-market
+          fetch-depth: 1
+          token: ${{ secrets.PHALANX_PAT }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pyyaml
+
+      - name: Show market source
+        run: |
+          ls -la phalanx-market
+          cat phalanx-market/catalog.yaml
+
+      - name: Install live phalanx-market writing bundle
+        run: |
+          mkdir -p target
+          python phalanx/tools/platform/phalanx_install.py \
+            --platform ${{ matrix.platform }} \
+            --bundles writing \
+            --market-source "$GITHUB_WORKSPACE/phalanx-market" \
+            --target "$GITHUB_WORKSPACE/target" \
+            --skip-healthcheck
+
+      - name: Verify writing bundle landed
+        run: |
+          echo "--- target contents ---"
+          find target -maxdepth 4 -type f | sort
+          echo "--- assertions ---"
+          # Bundle catalog from phalanx-market must be registered.
+          test -f target/bundles/writing.yaml || {
+            echo "::error::writing bundle catalog not registered"
+            ls -la target/bundles/ || true
+            exit 1
+          }
+          # Skill from market overlay.
+          test -f target/skills/editing-copy/SKILL.md || {
+            echo "::error::editing-copy skill from market not overlaid"
+            ls -la target/skills/ || true
+            exit 1
+          }
+          # Agent from market overlay (v2 single-file shape).
+          test -f target/agents/copy-editor.md || {
+            echo "::error::copy-editor agent from market not overlaid"
+            ls -la target/agents/ || true
+            exit 1
+          }
+          # Tools from market overlay.
+          test -f target/tools/writing/lint_copy.py || {
+            echo "::error::lint_copy.py tool from market not overlaid"
+            exit 1
+          }
+          test -f target/tools/writing/manage_glossary.py || {
+            echo "::error::manage_glossary.py tool from market not overlaid"
+            exit 1
+          }
+          # Context files from market overlay (PR #145).
+          test -f target/context/writing/terminology.yaml || {
+            echo "::error::context/writing/terminology.yaml from market not overlaid"
+            exit 1
+          }
+          test -f target/context/writing/banned-phrases.yaml || {
+            echo "::error::context/writing/banned-phrases.yaml from market not overlaid"
+            exit 1
+          }
+          # Style guide stays in core.
+          test -f target/context/style-guide.md || {
+            echo "::error::core context/style-guide.md missing"
+            exit 1
+          }
+          # installed_bundles.json must record writing.
+          grep -q "writing" target/data/installed_bundles.json || {
+            echo "::error::writing bundle not recorded in installed_bundles.json"
+            cat target/data/installed_bundles.json || true
+            exit 1
+          }
+          echo "OK: live phalanx-market writing bundle installed end-to-end"
+
+      - name: Smoke-test the installed lint_copy tool
+        # Catches regressions where the tool lands but its module-relative
+        # imports / context paths break under the layered install layout.
+        run: |
+          mkdir -p target/workspace/smoke
+          cat > target/workspace/smoke/sample.md <<'EOF'
+          # Smoke
+
+          This document deliberately uses an em dash — to trip the linter.
+          EOF
+          cd target
+          # --workspace points at the slug under workspace/. Non-zero exit on
+          # findings is expected; we just need the tool to load and run.
+          set +e
+          python tools/writing/lint_copy.py --target workspace/smoke/sample.md --workspace smoke
+          rc=$?
+          set -e
+          # Exit codes: 0 = clean, 1 = findings (acceptable), >1 = tool error.
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::lint_copy.py crashed (exit $rc) - tool not runnable in installed layout"
+            exit 1
+          fi
+          echo "OK: lint_copy.py executed (exit $rc)"
+
+      - name: Report on failure
+        if: failure()
+        run: |
+          echo "::error::Live market install failed for platform=${{ matrix.platform }}"
+          echo "Reproduce locally:"
+          echo "  git clone https://github.com/td-project-ai/phalanx.git /tmp/phalanx"
+          echo "  git clone https://github.com/td-project-ai/phalanx-market.git /tmp/phalanx-market"
+          echo "  mkdir /tmp/target"
+          echo "  python /tmp/phalanx/tools/platform/phalanx_install.py \\"
+          echo "    --platform ${{ matrix.platform }} --bundles writing \\"
+          echo "    --market-source /tmp/phalanx-market --target /tmp/target"
