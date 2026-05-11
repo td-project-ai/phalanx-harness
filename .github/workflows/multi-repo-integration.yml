@@ -65,7 +65,7 @@ jobs:
       - name: Install with --bundle-source
         run: |
           mkdir -p target
-          python phalanx/tools/platform/phalanx_install.py \
+          python phalanx/core/tools/platform/phalanx_install.py \
             --platform ${{ matrix.platform }} \
             --bundles synth-cloud \
             --bundle-source "$GITHUB_WORKSPACE/external-bundles" \
@@ -104,7 +104,7 @@ jobs:
           echo "  git clone https://github.com/td-project-ai/phalanx.git /tmp/phalanx"
           echo "  cp -r /tmp/phalanx/tests/fixtures/synth_bundle_src /tmp/external-bundles"
           echo "  mkdir /tmp/target"
-          echo "  python /tmp/phalanx/tools/platform/phalanx_install.py \\"
+          echo "  python /tmp/phalanx/core/tools/platform/phalanx_install.py \\"
           echo "    --platform ${{ matrix.platform }} --bundles synth-cloud \\"
           echo "    --bundle-source /tmp/external-bundles --target /tmp/target"
 
@@ -149,7 +149,7 @@ jobs:
       - name: Install live phalanx-market writing bundle
         run: |
           mkdir -p target
-          python phalanx/tools/platform/phalanx_install.py \
+          python phalanx/core/tools/platform/phalanx_install.py \
             --platform ${{ matrix.platform }} \
             --bundles writing \
             --market-source "$GITHUB_WORKSPACE/phalanx-market" \
@@ -242,6 +242,6 @@ jobs:
           echo "  git clone https://github.com/td-project-ai/phalanx.git /tmp/phalanx"
           echo "  git clone https://github.com/td-project-ai/phalanx-market.git /tmp/phalanx-market"
           echo "  mkdir /tmp/target"
-          echo "  python /tmp/phalanx/tools/platform/phalanx_install.py \\"
+          echo "  python /tmp/phalanx/core/tools/platform/phalanx_install.py \\"
           echo "    --platform ${{ matrix.platform }} --bundles writing \\"
           echo "    --market-source /tmp/phalanx-market --target /tmp/target"
