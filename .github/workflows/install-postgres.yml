@@ -1,0 +1,191 @@
+name: Install (postgres-as-service)
+
+# PR-H2: Verifies an install with services.postgres enabled records the
+# expected state["runtime"] snapshot in .phalanx/installed.json.
+#
+# Asserts:
+#   * services.postgres.enabled == true
+#   * services.postgres.host    == "127.0.0.1"   (the runner-local service)
+#   * services.postgres.port    == 5432
+#   * memory.backend            == "postgres"
+#   * memory.database           == "phalanx_memory"
+#   * activity.backend          == "postgres"
+#   * activity.database         == "phalanx_activity"
+#
+# The runtime snapshot is REDACTED - it never carries the password or
+# password_env value. The job double-checks that no secret material appears
+# in installed.json.
+#
+# Per-platform: each install type gets its own job so the harness exercises
+# exactly one backend wiring at a time. Companion to install-sqlite.yml.
+
+on:
+  schedule:
+    - cron: '30 7 * * *'
+  workflow_dispatch:
+    inputs:
+      phalanx_ref:
+        description: 'phalanx core ref (branch, tag, or SHA)'
+        required: false
+        default: 'main'
+  pull_request:
+    paths:
+      - '.github/workflows/install-postgres.yml'
+      - 'tests/test_install_postgres.py'
+
+jobs:
+  install-postgres:
+    name: install-postgres (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [claude, copilot, codex]
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: phalanx
+          POSTGRES_PASSWORD: phalanx-test-pw
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U phalanx"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout phalanx core
+        uses: actions/checkout@v4
+        with:
+          repository: td-project-ai/phalanx
+          ref: ${{ inputs.phalanx_ref || 'main' }}
+          path: phalanx
+          fetch-depth: 1
+          token: ${{ secrets.PHALANX_PAT }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pyyaml
+
+      - name: Stage external bundle source
+        run: |
+          cp -r phalanx/tests/fixtures/synth_bundle_src external-bundles
+          ls -la external-bundles
+
+      - name: Install (postgres-as-service)
+        run: |
+          mkdir -p target
+          python phalanx/core/tools/platform/phalanx_install.py \
+            --platform ${{ matrix.platform }} \
+            --bundles synth-cloud \
+            --bundle-source "$GITHUB_WORKSPACE/external-bundles" \
+            --target "$GITHUB_WORKSPACE/target" \
+            --skip-healthcheck
+
+      - name: Write postgres-as-service runtime config
+        # runtime_summary reads <target>/.phalanx/config.yaml. We declare
+        # services.postgres pointing at the runner-local service and wire
+        # both memory + activity to postgres with distinct databases.
+        env:
+          PHALANX_PG_PASSWORD: phalanx-test-pw
+        run: |
+          mkdir -p target/.phalanx
+          cat > target/.phalanx/config.yaml <<'EOF'
+          services:
+            postgres:
+              enabled: true
+              host: 127.0.0.1
+              port: 5432
+              user: phalanx
+              password_env: PHALANX_PG_PASSWORD
+              admin_database: postgres
+          memory:
+            backend: postgres
+            database: phalanx_memory
+          activity:
+            backend: postgres
+            database: phalanx_activity
+          EOF
+          cat target/.phalanx/config.yaml
+
+      - name: Record runtime snapshot
+        run: |
+          python phalanx/core/tools/platform/bootstrap_state.py \
+            --root "$GITHUB_WORKSPACE/target" \
+            --record-runtime --json
+
+      - name: Assert installed.json runtime block
+        run: |
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+
+          state_path = Path("target/.phalanx/installed.json")
+          if not state_path.is_file():
+              print(f"::error::missing {state_path}")
+              sys.exit(1)
+
+          state = json.loads(state_path.read_text())
+          runtime = state.get("runtime")
+          if not isinstance(runtime, dict):
+              print("::error::state['runtime'] missing or not a dict")
+              print(json.dumps(state, indent=2))
+              sys.exit(1)
+
+          print("--- runtime block ---")
+          print(json.dumps(runtime, indent=2))
+
+          failures = []
+
+          pg = runtime.get("services", {}).get("postgres", {})
+          if pg.get("enabled") is not True:
+              failures.append(f"services.postgres.enabled != True (got {pg!r})")
+          if pg.get("host") != "127.0.0.1":
+              failures.append(f"services.postgres.host != '127.0.0.1' (got {pg.get('host')!r})")
+          if pg.get("port") != 5432:
+              failures.append(f"services.postgres.port != 5432 (got {pg.get('port')!r})")
+          if pg.get("user") != "phalanx":
+              failures.append(f"services.postgres.user != 'phalanx' (got {pg.get('user')!r})")
+          if pg.get("admin_database") != "postgres":
+              failures.append(f"services.postgres.admin_database != 'postgres' (got {pg.get('admin_database')!r})")
+
+          mem = runtime.get("memory", {})
+          if mem.get("backend") != "postgres":
+              failures.append(f"memory.backend != 'postgres' (got {mem!r})")
+          if mem.get("database") != "phalanx_memory":
+              failures.append(f"memory.database != 'phalanx_memory' (got {mem.get('database')!r})")
+
+          act = runtime.get("activity", {})
+          if act.get("backend") != "postgres":
+              failures.append(f"activity.backend != 'postgres' (got {act!r})")
+          if act.get("database") != "phalanx_activity":
+              failures.append(f"activity.database != 'phalanx_activity' (got {act.get('database')!r})")
+
+          # Redaction guarantee: NO secret material may appear in the snapshot.
+          raw = json.dumps(runtime)
+          forbidden = ["phalanx-test-pw", "password_env", "PHALANX_PG_PASSWORD", "password"]
+          for needle in forbidden:
+              if needle in raw:
+                  failures.append(f"runtime snapshot leaks forbidden token {needle!r}")
+
+          if failures:
+              for f in failures:
+                  print(f"::error::{f}")
+              sys.exit(1)
+
+          print("OK: runtime snapshot is postgres-as-service with all consumers wired and credentials redacted")
+          PY
+
+      - name: Report on failure
+        if: failure()
+        run: |
+          echo "::error::postgres install runtime assertion failed for platform=${{ matrix.platform }}"
+          echo "--- installed.json (if present) ---"
+          cat target/.phalanx/installed.json 2>/dev/null || echo "(missing)"
