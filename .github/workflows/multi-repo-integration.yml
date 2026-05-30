@@ -75,26 +75,40 @@ jobs:
       - name: Verify external bundle landed
         run: |
           echo "--- target contents ---"
-          find target -maxdepth 4 -type f | sort
+          find target -maxdepth 5 -type f | sort
           echo "--- assertions ---"
+          # Hidden-framework layout (v3+): infra lives under .phalanx/; skills/agents
+          # live under .claude/ for claude, .phalanx/ for copilot/codex.
+          if [ "${{ matrix.platform }}" = "claude" ]; then
+            SKILL_ROOT="target/.claude"
+          else
+            SKILL_ROOT="target/.phalanx"
+          fi
           # The synth-cloud bundle catalog from external-bundles must be registered.
-          test -f target/bundles/synth-cloud.yaml || {
+          test -f target/.phalanx/bundles/synth-cloud.yaml || {
             echo "::error::synth-cloud bundle from external source not registered"
-            ls -la target/bundles/ || true
+            ls -la target/.phalanx/bundles/ || true
             exit 1
           }
           # installed_bundles.json must record synth-cloud (proves bundle install ran).
-          grep -q "synth-cloud" target/data/installed_bundles.json || {
+          grep -q "synth-cloud" target/.phalanx/data/installed_bundles.json || {
             echo "::error::synth-cloud not recorded in installed_bundles.json"
-            cat target/data/installed_bundles.json || true
+            cat target/.phalanx/data/installed_bundles.json || true
             exit 1
           }
           # Core skill referenced by the bundle must also be present.
-          test -d target/skills/managing-memory || {
-            echo "::error::core skill managing-memory missing"
+          test -d "$SKILL_ROOT/skills/managing-memory" || {
+            echo "::error::core skill managing-memory missing under $SKILL_ROOT"
             exit 1
           }
           echo "OK: external bundle catalog + core skills both installed"
+
+      - name: Verify install layout (--verify)
+        run: |
+          python phalanx/core/tools/platform/phalanx_install.py \
+            --platform ${{ matrix.platform }} \
+            --target "$GITHUB_WORKSPACE/target" \
+            --verify
 
       - name: Report on failure
         if: failure()
@@ -159,68 +173,82 @@ jobs:
       - name: Verify writing bundle landed
         run: |
           echo "--- target contents ---"
-          find target -maxdepth 4 -type f | sort
+          find target -maxdepth 5 -type f | sort
           echo "--- assertions ---"
+          # Hidden-framework layout (v3+): infra lives under .phalanx/; skills/agents
+          # live under .claude/ for claude, .phalanx/ for copilot/codex.
+          if [ "${{ matrix.platform }}" = "claude" ]; then
+            SKILL_ROOT="target/.claude"
+          else
+            SKILL_ROOT="target/.phalanx"
+          fi
           # Bundle catalog from phalanx-market must be registered.
-          test -f target/bundles/writing.yaml || {
+          test -f target/.phalanx/bundles/writing.yaml || {
             echo "::error::writing bundle catalog not registered"
-            ls -la target/bundles/ || true
+            ls -la target/.phalanx/bundles/ || true
             exit 1
           }
           # Skill from market overlay.
-          test -f target/skills/editing-copy/SKILL.md || {
-            echo "::error::editing-copy skill from market not overlaid"
-            ls -la target/skills/ || true
+          test -f "$SKILL_ROOT/skills/editing-copy/SKILL.md" || {
+            echo "::error::editing-copy skill from market not overlaid under $SKILL_ROOT"
+            ls -la "$SKILL_ROOT/skills/" || true
             exit 1
           }
           # Agent from market overlay (v2 single-file shape).
-          test -f target/agents/copy-editor.md || {
-            echo "::error::copy-editor agent from market not overlaid"
-            ls -la target/agents/ || true
+          test -f "$SKILL_ROOT/agents/copy-editor.md" || {
+            echo "::error::copy-editor agent from market not overlaid under $SKILL_ROOT"
+            ls -la "$SKILL_ROOT/agents/" || true
             exit 1
           }
-          # Tools from market overlay.
-          test -f target/tools/writing/lint_copy.py || {
+          # Tools from market overlay (always under .phalanx/).
+          test -f target/.phalanx/tools/writing/lint_copy.py || {
             echo "::error::lint_copy.py tool from market not overlaid"
             exit 1
           }
-          test -f target/tools/writing/manage_glossary.py || {
+          test -f target/.phalanx/tools/writing/manage_glossary.py || {
             echo "::error::manage_glossary.py tool from market not overlaid"
             exit 1
           }
-          # Context files from market overlay (PR #145).
-          test -f target/context/writing/terminology.yaml || {
+          # Context files from market overlay (PR #145, always under .phalanx/).
+          test -f target/.phalanx/context/writing/terminology.yaml || {
             echo "::error::context/writing/terminology.yaml from market not overlaid"
             exit 1
           }
-          test -f target/context/writing/banned-phrases.yaml || {
+          test -f target/.phalanx/context/writing/banned-phrases.yaml || {
             echo "::error::context/writing/banned-phrases.yaml from market not overlaid"
             exit 1
           }
-          # Style guide stays in core.
-          test -f target/context/style-guide.md || {
+          # Style guide stays in core (always under .phalanx/).
+          test -f target/.phalanx/context/style-guide.md || {
             echo "::error::core context/style-guide.md missing"
             exit 1
           }
           # installed_bundles.json must record writing.
-          grep -q "writing" target/data/installed_bundles.json || {
+          grep -q "writing" target/.phalanx/data/installed_bundles.json || {
             echo "::error::writing bundle not recorded in installed_bundles.json"
-            cat target/data/installed_bundles.json || true
+            cat target/.phalanx/data/installed_bundles.json || true
             exit 1
           }
           echo "OK: live phalanx-market writing bundle installed end-to-end"
+
+      - name: Verify install layout (--verify)
+        run: |
+          python phalanx/core/tools/platform/phalanx_install.py \
+            --platform ${{ matrix.platform }} \
+            --target "$GITHUB_WORKSPACE/target" \
+            --verify
 
       - name: Smoke-test the installed lint_copy tool
         # Catches regressions where the tool lands but its module-relative
         # imports / context paths break under the layered install layout.
         run: |
-          mkdir -p target/workspace/smoke
-          cat > target/workspace/smoke/sample.md <<'EOF'
+          mkdir -p target/.phalanx/workspace/smoke
+          cat > target/.phalanx/workspace/smoke/sample.md <<'EOF'
           # Smoke
 
           This document deliberately uses an em dash — to trip the linter.
           EOF
-          cd target
+          cd target/.phalanx
           # --workspace points at the slug under workspace/. Non-zero exit on
           # findings is expected; we just need the tool to load and run.
           set +e
